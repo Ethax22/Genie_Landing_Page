@@ -1,18 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import * as THREE from "three";
+import gsap from "gsap";
 
-type AnimState =
-    | "lamp-idle"
-    | "lamp-hover"
-    | "emerging"
-    | "genie-idle"
-    | "returning";
+type GenieState = "idle" | "emerging" | "vortex-idle" | "returning" | "locked";
 
-/**
- * Self-contained Three.js scene with interactive lamp → genie emergence.
- */
 export default function GenieModel() {
     const containerRef = useRef<HTMLDivElement>(null);
     const cleanupRef = useRef<(() => void) | null>(null);
@@ -20,29 +13,16 @@ export default function GenieModel() {
     const init = useCallback(async () => {
         if (!containerRef.current) return;
 
-        /* ──────────────────────────────────────────────
-         * Dynamic imports (avoid SSR)
-         * ──────────────────────────────────────────── */
-        const { GLTFLoader } = await import(
-            "three/examples/jsm/loaders/GLTFLoader.js"
-        );
-        const { OrbitControls } = await import(
-            "three/examples/jsm/controls/OrbitControls.js"
-        );
-        const { RoomEnvironment } = await import(
-            "three/examples/jsm/environments/RoomEnvironment.js"
-        );
+        const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
+        const { OrbitControls } = await import("three/examples/jsm/controls/OrbitControls.js");
+        const { RoomEnvironment } = await import("three/examples/jsm/environments/RoomEnvironment.js");
 
         const container = containerRef.current;
         const width = container.clientWidth;
         const height = container.clientHeight;
 
-        /* ──────────────────────────────────────────────
-         * Core scene
-         * ──────────────────────────────────────────── */
         const scene = new THREE.Scene();
 
-        // Target: position: (0, 0, 7), fov: 45, lookAt: (0, -1, 0)
         const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
         camera.position.set(0, 0.5, 8);
         camera.lookAt(0, 0, 0);
@@ -57,18 +37,10 @@ export default function GenieModel() {
         renderer.toneMappingExposure = 1.2;
         container.appendChild(renderer.domElement);
 
-        /* ── Environment map for realistic reflections (lamp only) ── */
         const pmremGenerator = new THREE.PMREMGenerator(renderer);
-        const envTexture = pmremGenerator.fromScene(
-            new RoomEnvironment()
-        ).texture;
-        // Do NOT set scene.environment — that makes everything gold
-        // We'll apply it only to the lamp materials below.
+        const envTexture = pmremGenerator.fromScene(new RoomEnvironment()).texture;
         pmremGenerator.dispose();
 
-        /* ──────────────────────────────────────────────
-         * Controls
-         * ──────────────────────────────────────────── */
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.08;
@@ -76,7 +48,7 @@ export default function GenieModel() {
         controls.enableZoom = false;
         controls.minPolarAngle = Math.PI * 0.25;
         controls.maxPolarAngle = Math.PI * 0.7;
-        controls.target.set(0, 0, 0); // follow camera lookAt roughly
+        controls.target.set(0, 0, 0);
 
         let isDragging = false;
         controls.addEventListener("start", () => {
@@ -88,50 +60,31 @@ export default function GenieModel() {
             renderer.domElement.style.cursor = "default";
         });
 
-        /* ──────────────────────────────────────────────
-         * Lighting
-         * ──────────────────────────────────────────── */
-        // Warm key light (makes gold lamp shine)
+        // ── Lighting ──
         const keyLight = new THREE.DirectionalLight(0xFFE4B5, 2.0);
         keyLight.position.set(3, 5, 4);
         keyLight.castShadow = true;
         scene.add(keyLight);
 
-        // Cool fill light (makes blue genie pop)
         const fillLight = new THREE.DirectionalLight(0x88AAFF, 0.8);
         fillLight.position.set(-3, 2, 2);
         scene.add(fillLight);
 
-        // Ambient
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
         scene.add(ambientLight);
 
-        // Gold point light near lamp
         const lampLight = new THREE.PointLight(0xFF9500, 2.5, 8);
         lampLight.position.set(0, -1.8, 1.5);
         scene.add(lampLight);
 
-        // Blue rim light for genie (off initially)
-        const blueLight = new THREE.PointLight(0x4488FF, 0.0, 10);
-        blueLight.position.set(0, 0, 2);
-        scene.add(blueLight);
-
-        /* ──────────────────────────────────────────────
-         * Mystic Smoke — Sprite-based wisps (hover-activated)
-         * ──────────────────────────────────────────── */
+        // ── Mystic Smoke ──
         let smokeActive = false;
-        let smokeOpacity = 0;
-
-        // Procedural cloud texture for soft, organic smoke look
         const sCvs = document.createElement("canvas");
         sCvs.width = 128;
         sCvs.height = 128;
         const sCtx = sCvs.getContext("2d")!;
         sCtx.globalCompositeOperation = "lighter";
-        const offsets = [
-            [64, 64, 50], [48, 50, 35], [80, 55, 30],
-            [55, 75, 28], [70, 45, 32],
-        ];
+        const offsets = [[64, 64, 50], [48, 50, 35], [80, 55, 30], [55, 75, 28], [70, 45, 32]];
         for (const [cx, cy, r] of offsets) {
             const g = sCtx.createRadialGradient(cx, cy, 0, cx, cy, r);
             g.addColorStop(0, "rgba(180, 120, 255, 0.5)");
@@ -141,14 +94,10 @@ export default function GenieModel() {
             sCtx.fillRect(0, 0, 128, 128);
         }
         const smokeTexture = new THREE.CanvasTexture(sCvs);
-
         const WISP_COUNT = 50;
         interface SmokeWisp {
-            sprite: THREE.Sprite;
-            vy: number; vx: number; vz: number;
-            life: number; maxLife: number;
-            rotSpeed: number;
-            active: boolean;
+            sprite: THREE.Sprite; vy: number; vx: number; vz: number;
+            life: number; maxLife: number; rotSpeed: number; active: boolean;
         }
         const wisps: SmokeWisp[] = [];
         const smokeGroup = new THREE.Group();
@@ -156,33 +105,24 @@ export default function GenieModel() {
 
         for (let i = 0; i < WISP_COUNT; i++) {
             const mat = new THREE.SpriteMaterial({
-                map: smokeTexture,
-                transparent: true,
-                opacity: 0,
-                blending: THREE.AdditiveBlending,
-                depthWrite: false,
-                color: 0xaa66ff,
+                map: smokeTexture, transparent: true, opacity: 0,
+                blending: THREE.AdditiveBlending, depthWrite: false, color: 0xaa66ff,
             });
             const sprite = new THREE.Sprite(mat);
             sprite.scale.set(0.1, 0.1, 1);
             sprite.position.set(0, -100, 0);
             smokeGroup.add(sprite);
-            wisps.push({
-                sprite, vy: 0, vx: 0, vz: 0,
-                life: 0, maxLife: 1, rotSpeed: 0, active: false,
-            });
+            wisps.push({ sprite, vy: 0, vx: 0, vz: 0, life: 0, maxLife: 1, rotSpeed: 0, active: false });
         }
 
         function spawnWisp(w: SmokeWisp) {
-            // Spawn from lamp spout area, spread in all directions (360°)
             const angle = Math.random() * Math.PI * 2;
             const spawnRadius = Math.random() * 0.15;
             w.sprite.position.set(
                 Math.cos(angle) * spawnRadius,
-                -0.4 + Math.random() * 0.2,   // near spout height
+                -0.4 + Math.random() * 0.2, // Near spout height approximately
                 Math.sin(angle) * spawnRadius
             );
-            // Drift radially outward + upward to surround the lamp
             const outSpeed = 0.003 + Math.random() * 0.005;
             w.vy = 0.006 + Math.random() * 0.01;
             w.vx = Math.cos(angle) * outSpeed;
@@ -195,79 +135,83 @@ export default function GenieModel() {
             (w.sprite.material as THREE.SpriteMaterial).opacity = 0;
         }
 
-        /* ──────────────────────────────────────────────
-         * Load models
-         * ──────────────────────────────────────────── */
+        // ── Load Lamp model ──
         const loader = new GLTFLoader();
         let lampModel: THREE.Group | null = null;
-        let genieModel: THREE.Group | null = null;
-
-        // Load lamp
+        let lampSpoutPosition = new THREE.Vector3(1.2, -0.6, 0); // fallback approximate spout local pos
+        
         const lampGltf = await loader.loadAsync("/lamp.glb");
         lampModel = lampGltf.scene;
-        // Antique Aladdin gold lamp material
         lampModel.traverse((child: THREE.Object3D) => {
             if ((child as THREE.Mesh).isMesh) {
                 const mesh = child as THREE.Mesh;
                 const mat = new THREE.MeshStandardMaterial({
                     color: new THREE.Color(0xC8860A),
-                    metalness: 0.95,
-                    roughness: 0.12,
-                    emissive: new THREE.Color(0x7A4500),
-                    emissiveIntensity: 0.15,
-                    envMap: envTexture,       // Apply env map ONLY to lamp
-                    envMapIntensity: 1.0,
+                    metalness: 0.95, roughness: 0.12,
+                    emissive: new THREE.Color(0x7A4500), emissiveIntensity: 0.15,
+                    envMap: envTexture, envMapIntensity: 1.0,
                 });
                 mesh.material = mat;
                 mesh.castShadow = true;
             }
+            
+            // Helpful logging for debugging exact node names and spout local positions
+            // console.log("Node:", child.name, child.position);
         });
         lampModel.position.set(0, -1.8, 0);
         lampModel.scale.set(1.8, 1.8, 1.8);
-        lampModel.rotation.set(0, 0, 0);
         scene.add(lampModel);
 
-        // Load genie (uses baked-in colors from GLB)
-        const genieGltf = await loader.loadAsync("/genie.glb");
-        genieModel = genieGltf.scene;
+        // ── Vortex Particle System ──
+        const isMobile = window.innerWidth < 768 || navigator.hardwareConcurrency < 4;
+        const PARTICLE_COUNT = isMobile ? 800 : 3000;
 
-        genieModel.traverse((child: THREE.Object3D) => {
-            if (!(child as THREE.Mesh).isMesh) return;
-            const mesh = child as THREE.Mesh;
-            mesh.castShadow = true;
-            mesh.receiveShadow = true;
+        const particles = {
+            geometry: new THREE.BufferGeometry(),
+            count: PARTICLE_COUNT,
+            positions: new Float32Array(PARTICLE_COUNT * 3),
+            colors: new Float32Array(PARTICLE_COUNT * 3),
+            angles: new Float32Array(PARTICLE_COUNT),
+            radii: new Float32Array(PARTICLE_COUNT),
+            speeds: new Float32Array(PARTICLE_COUNT),
+            offsets: new Float32Array(PARTICLE_COUNT)
+        };
+
+        const goldColor = new THREE.Color("#F59E0B");
+        const purpleColor = new THREE.Color("#8B5CF6");
+
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            particles.angles[i] = Math.random() * Math.PI * 2;
+            particles.radii[i] = 0; // starts at lamp spout
+            particles.speeds[i] = 0.02 + Math.random() * 0.03;
+            particles.offsets[i] = Math.random() * Math.PI * 2;
+            
+            const mixedColor = goldColor.clone().lerp(purpleColor, Math.random());
+            particles.colors[i * 3] = mixedColor.r;
+            particles.colors[i * 3 + 1] = mixedColor.g;
+            particles.colors[i * 3 + 2] = mixedColor.b;
+        }
+
+        particles.geometry.setAttribute("position", new THREE.BufferAttribute(particles.positions, 3));
+        particles.geometry.setAttribute("color", new THREE.BufferAttribute(particles.colors, 3));
+
+        const particleMaterial = new THREE.PointsMaterial({
+            size: 0.04,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.85,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
         });
 
-        // Blush cheek lights
-        const blushL = new THREE.PointLight(0xFF6B8A, 0.4, 1.5);
-        blushL.position.set(-0.3, 0.5, 0.8);
-        genieModel.add(blushL);
-        const blushR = new THREE.PointLight(0xFF6B8A, 0.4, 1.5);
-        blushR.position.set(0.3, 0.5, 0.8);
-        genieModel.add(blushR);
+        const particleSystem = new THREE.Points(particles.geometry, particleMaterial);
+        particleSystem.visible = false;
+        scene.add(particleSystem);
 
-        // Eye sparkle light
-        const eyeLight = new THREE.PointLight(0xFFFFFF, 0.6, 1.0);
-        eyeLight.position.set(0, 0.7, 1.0);
-        genieModel.add(eyeLight);
 
-        // Tail glow — purple
-        const tailGlow = new THREE.PointLight(0x9933FF, 1.2, 3.0);
-        tailGlow.position.set(0, -1.5, 0);
-        genieModel.add(tailGlow);
-
-        // Starts INSIDE lamp
-        genieModel.position.set(0, -1.8, 0);
-        genieModel.scale.set(0, 0, 0);
-        genieModel.visible = false;
-        scene.add(genieModel);
-
-        /* ──────────────────────────────────────────────
-         * State & Raycaster
-         * ──────────────────────────────────────────── */
-        let state: AnimState = "lamp-idle";
-        let emergeStart: number | null = null;
-        let returnStart: number | null = null;
+        // ── State & Raycaster ──
+        let genieState: GenieState = "idle";
+        let hoverState = false;
 
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
@@ -281,23 +225,85 @@ export default function GenieModel() {
         function onPointerMove(e: MouseEvent) {
             updateMouse(e);
             if (isDragging) return;
-
             raycaster.setFromCamera(mouse, camera);
             let hovering = false;
 
             if (lampModel) {
                 const hits = raycaster.intersectObject(lampModel, true);
                 if (hits.length > 0) {
-                    if (state === "lamp-idle" || state === "lamp-hover" || state === "genie-idle") {
+                    if (genieState === "idle" || genieState === "vortex-idle") {
                         hovering = true;
-                        if (state === "lamp-idle") state = "lamp-hover";
                     }
-                } else {
-                    if (state === "lamp-hover") state = "lamp-idle";
                 }
             }
-
+            hoverState = hovering;
             renderer.domElement.style.cursor = hovering ? "pointer" : "default";
+        }
+
+        // ── Actions ──
+        function triggerEmerge() {
+            if (genieState !== "idle") return; // click lock
+            genieState = "locked";
+            
+            particleSystem.visible = true;
+            
+            gsap.to(particles.radii as any, {
+                endArray: Array.from(particles.radii).map(() => 0.8 + Math.random() * 0.6),
+                duration: 1.5,
+                ease: "power2.out",
+                onComplete: () => { genieState = "vortex-idle"; }
+            });
+            
+            const letters = document.querySelectorAll(".genie-letter");
+            gsap.set("#genie-text-overlay", { opacity: 1 });
+            gsap.fromTo(letters, 
+                { opacity: 0, y: 20, scale: 0.5 },
+                { 
+                    opacity: 1, 
+                    y: 0, 
+                    scale: 1,
+                    duration: 0.1,
+                    stagger: 0.06,
+                    ease: "back.out(1.7)",
+                    delay: 0.5
+                }
+            );
+        }
+
+        function triggerReturn() {
+            if (genieState !== "vortex-idle") return; // click lock
+            genieState = "locked";
+            
+            // Kill pulse
+            gsap.killTweensOf(".genie-letter");
+            
+            // Reverse letter animation
+            const letters = document.querySelectorAll(".genie-letter");
+            gsap.to(letters, {
+                opacity: 0,
+                y: -20,
+                scale: 0.3,
+                duration: 0.08,
+                stagger: { each: 0.04, from: "end" },
+                ease: "power2.in"
+            });
+            
+            gsap.to("#genie-text-overlay", { 
+                opacity: 0, 
+                duration: 0.3, 
+                delay: 0.4 
+            });
+            
+            // Particles shrink to 0
+            gsap.to(particles.radii as any, {
+                endArray: Array.from(new Float32Array(PARTICLE_COUNT)),
+                duration: 1,
+                ease: "power3.in",
+                onComplete: () => {
+                    particleSystem.visible = false;
+                    genieState = "idle"; // unlock
+                }
+            });
         }
 
         function onClick(e: MouseEvent) {
@@ -307,16 +313,10 @@ export default function GenieModel() {
             if (lampModel) {
                 const hits = raycaster.intersectObject(lampModel, true);
                 if (hits.length > 0) {
-                    if (state === "lamp-idle" || state === "lamp-hover") {
-                        // Lamp clicked when genie is inside -> emerge
-                        state = "emerging";
-                        emergeStart = null;
-                        renderer.domElement.style.cursor = "default";
-                    } else if (state === "genie-idle") {
-                        // Lamp clicked when genie is already out -> return
-                        state = "returning";
-                        returnStart = null;
-                        renderer.domElement.style.cursor = "default";
+                    if (genieState === "idle") {
+                        triggerEmerge();
+                    } else if (genieState === "vortex-idle") {
+                        triggerReturn();
                     }
                 }
             }
@@ -325,9 +325,8 @@ export default function GenieModel() {
         renderer.domElement.addEventListener("pointermove", onPointerMove);
         renderer.domElement.addEventListener("click", onClick);
 
-        /* ──────────────────────────────────────────────
-         * Resize
-         * ──────────────────────────────────────────── */
+
+        /* ── Resize ── */
         function onResize() {
             if (!container) return;
             const w = container.clientWidth;
@@ -338,23 +337,7 @@ export default function GenieModel() {
         }
         window.addEventListener("resize", onResize);
 
-        /* ──────────────────────────────────────────────
-         * Animation helpers
-         * ──────────────────────────────────────────── */
-        function easeOutElastic(x: number): number {
-            const c4 = (2 * Math.PI) / 3;
-            return x === 0 ? 0 : x === 1 ? 1 :
-                Math.pow(2, -10 * x) * Math.sin((x * 10 - 0.75) * c4) + 1;
-        }
 
-        function easeInCubic(t: number): number {
-            return t * t * t;
-        }
-
-        /* ──────────────────────────────────────────────
-         * Visibility-aware animation loop
-         * Pauses rendering when the container is off-screen
-         * ──────────────────────────────────────────── */
         const clock = new THREE.Clock();
         let animId = 0;
         let isVisible = true;
@@ -381,7 +364,7 @@ export default function GenieModel() {
 
             controls.update();
 
-            // ── Mystic Smoke Wisp Logic ──
+            // ── Smoke ──
             if (lampModel) {
                 const lampScreenPos = lampModel.position.clone().project(camera);
                 const screenX = (lampScreenPos.x * 0.5 + 0.5) * container.clientWidth;
@@ -389,46 +372,29 @@ export default function GenieModel() {
                 const dx = mouse.x * container.clientWidth * 0.5 + container.clientWidth * 0.5 - screenX;
                 const dy = -(mouse.y * container.clientHeight * 0.5) + container.clientHeight * 0.5 - screenY;
                 const dist = Math.sqrt(dx * dx + dy * dy);
-                smokeActive = dist < 250 || state === "emerging" || state === "genie-idle";
+                smokeActive = dist < 250 || genieState === "emerging" || genieState === "vortex-idle";
             }
 
             for (const w of wisps) {
                 if (!w.active || w.life <= 0) {
-                    // Try to respawn
-                    if (smokeActive && Math.random() < 0.08) {
-                        spawnWisp(w);
-                    }
+                    if (smokeActive && Math.random() < 0.08) spawnWisp(w);
                     continue;
                 }
-
-                // Move with swirling drift
                 w.sprite.position.x += w.vx + Math.sin(t * 2 + w.life * 10) * 0.002;
                 w.sprite.position.y += w.vy;
                 w.sprite.position.z += w.vz + Math.cos(t * 1.5 + w.life * 8) * 0.001;
-
-                // Age
                 w.life -= 0.016;
-                const progress = 1 - (w.life / w.maxLife); // 0 → 1
-
-                // Scale up as it rises (small → large)
+                const progress = 1 - (w.life / w.maxLife); 
                 const scale = 0.15 + progress * 1.2;
                 w.sprite.scale.set(scale, scale, 1);
-
-                // Rotate
                 w.sprite.material.rotation += w.rotSpeed;
 
-                // Bell curve opacity: fade in quickly, linger, fade out
                 let opacity;
-                if (progress < 0.15) {
-                    opacity = progress / 0.15; // fade in
-                } else if (progress > 0.6) {
-                    opacity = (1 - progress) / 0.4; // fade out
-                } else {
-                    opacity = 1.0;
-                }
+                if (progress < 0.15) opacity = progress / 0.15;
+                else if (progress > 0.6) opacity = (1 - progress) / 0.4;
+                else opacity = 1.0;
                 (w.sprite.material as THREE.SpriteMaterial).opacity = opacity * 0.5;
 
-                // Kill when done
                 if (w.life <= 0) {
                     w.active = false;
                     w.sprite.position.y = -100;
@@ -436,133 +402,62 @@ export default function GenieModel() {
                 }
             }
 
-
-            // 2. State Machine Logic
+            // ── Lamp & Camera Anim ──
             if (lampModel) {
-                if (state === "lamp-idle") {
-                    // IDLE LAMP ANIMATION
-                    lampModel.rotation.y += 0.004;
-                    lampModel.position.y = -1.8 + Math.sin(t * 1.2) * 0.04;
+                lampModel.rotation.y += 0.004;
+                lampModel.position.y = -1.8 + Math.sin(t * 1.2) * 0.04;
+
+                if (genieState === "idle") {
+                    lampModel.rotation.z = Math.sin(t * 8) * (hoverState ? 0.03 : 0);
+                    lampLight.intensity = hoverState ? 3.5 : (2.0 + Math.sin(t * 2.0) * 0.5);
+                    camera.position.z += (8.0 - camera.position.z) * 0.05;
+                    camera.position.y += (0.5 - camera.position.y) * 0.05; 
+                } else if (genieState === "emerging") {
+                    lampModel.rotation.z = Math.sin(t * 40) * 0.04;
+                    lampLight.intensity = 4.5;
+                    camera.position.z += (6.5 - camera.position.z) * 0.05;
+                    camera.position.y += (1.5 - camera.position.y) * 0.05;
+                } else if (genieState === "vortex-idle") {
+                    lampLight.intensity = 3.0 + Math.sin(t * 2.0) * 0.5;
                     lampModel.rotation.z = 0;
-                    lampModel.rotation.x = 0;
-                    lampLight.intensity = 2.0 + Math.sin(t * 2.0) * 0.5;
-
-                    // Ensure camera sits at 8
+                    camera.position.z += (7.0 - camera.position.z) * 0.02;
+                    camera.position.y += (1.0 - camera.position.y) * 0.02;
+                } else if (genieState === "returning") {
+                    lampLight.intensity = 4.5;
                     camera.position.z += (8.0 - camera.position.z) * 0.05;
-
-                } else if (state === "lamp-hover") {
-                    // HOVER LAMP ANIMATION
-                    lampModel.rotation.y += 0.004;
-                    lampModel.position.y = -1.8 + Math.sin(t * 1.2) * 0.04;
-                    lampLight.intensity = 3.5;
-                    lampModel.rotation.z = Math.sin(t * 8) * 0.03;
-
-                    camera.position.z += (8.0 - camera.position.z) * 0.05;
-
-                } else if (state === "emerging" && genieModel) {
-                    // CLICK ANIMATION - EMERGING
-                    if (emergeStart === null) emergeStart = performance.now();
-                    const elapsed = (performance.now() - emergeStart) / 1000;
-
-                    // Phase 1: Lamp shakes (0 to 0.4s mostly, bounded at 0.5s for smooth)
-                    if (elapsed < 0.5) {
-                        const shake = Math.sin(elapsed * 40) * 0.08 * (1 - elapsed / 0.5);
-                        lampModel.rotation.z = shake;
-                        lampModel.rotation.x = shake * 0.5;
-                        lampLight.intensity = 2.0 + (elapsed / 0.5) * 2.5; // Max 4.5
-
-                        // Camera slightly zooms in
-                        camera.position.z = 8.0 - (elapsed / 0.5) * 1.5; // 8 -> 6.5
-                    }
-
-                    // Phase 2: Genie rises (0.3s to 1.8s)
-                    if (elapsed >= 0.3) {
-                        genieModel.visible = true;
-                        const progress = Math.min((elapsed - 0.3) / 1.5, 1);
-                        const eased = easeOutElastic(progress);
-
-                        const s = eased * 1.5;
-                        genieModel.scale.set(s, s, s);
-                        genieModel.position.y = -1.8 + (eased * 1.9); // -1.8 to 0.1
-
-                        blueLight.intensity = eased * 2.5;
-                        blueLight.position.y = genieModel.position.y;
-
-                        // Lamp glow settles back down
-                        lampLight.intensity = Math.max(2.0, 4.5 - eased * 2.5);
-                        lampModel.rotation.z = 0;
-                        lampModel.rotation.x = 0;
-                    }
-
-                    // Phase 3: Settled
-                    if (elapsed > 1.8) {
-                        state = "genie-idle";
-                        emergeStart = null;
-                    }
-                } else if (state === "genie-idle" && genieModel) {
-                    // GENIE IDLE STATE
-                    lampModel.position.y = -1.8 + Math.sin(t * 1.2) * 0.04; // Lamp stays bobbing
-                    lampModel.rotation.y += 0.004;
-
-                    // Smoke slowly dissipates (opacity logic handles this if we stopped spawning, but we just fade overall effect here, or let the natural fade happen)
-                    // Currently smoke just keeps going, we'll let it play since the user only specified "dissipates" which implies it might just thin out. You'd normally throttle the spawn rate but we can leave it.
-
-                    genieModel.position.y = 0.1 + Math.sin(t * 0.8) * 0.08;
-                    if (!isDragging) {
-                        genieModel.rotation.y += 0.005;
-                    }
-                    blueLight.position.y = genieModel.position.y;
-
-                    // Tail glow pulse
-                    tailGlow.intensity = 1.0 + Math.sin(t * 2) * 0.3;
-
-                    // Camera eases back and up to frame the full genie
-                    camera.position.z += (9.0 - camera.position.z) * 0.05;
-                    camera.position.y += (1.0 - camera.position.y) * 0.05;
-
-                } else if (state === "returning" && genieModel) {
-                    // RETURN ANIMATION
-                    if (returnStart === null) returnStart = performance.now();
-                    const elapsed = (performance.now() - returnStart) / 1000;
-                    const progress = Math.min(elapsed / 0.8, 1);
-
-                    const eased = easeInCubic(progress);
-
-                    const scale = 1.5 - eased * 1.5;
-                    genieModel.scale.set(scale, scale, scale);
-                    // position.y -> -2.8 over 0.8s
-                    // We start around -0.2 and go to -2.8
-                    genieModel.position.y = 0.1 - (eased * 1.9);
-
-                    blueLight.intensity = (1.0 - progress) * 2.5;
-
-                    // Camera eases back to original position z=8
-                    camera.position.z += (8.0 - camera.position.z) * 0.08;
-
-                    if (scale < 0.01) {
-                        genieModel.visible = false;
-                    }
-
-                    // Lamp brief flash
-                    if (progress > 0.6) {
-                        lampLight.intensity = 2.0 + (1 - progress) * 3;
-                    }
-
-                    if (progress >= 1) {
-                        state = "lamp-idle";
-                        returnStart = null;
-                    }
+                    camera.position.y += (0.5 - camera.position.y) * 0.05;
                 }
+            }
+
+            // ── Particles Update ──
+            if (particleSystem.visible && lampModel) {
+                const timeStr = Date.now() * 0.001;
+                // Calculate dynamic world position for the origin point so it bobs with the lamp
+                // The approximate lamp spout offset in world space relative to lamp origin
+                const localSpoutOffset = new THREE.Vector3(1.1, 0.4, 0); 
+                const worldSpoutPos = localSpoutOffset.clone().applyMatrix4(lampModel.matrixWorld);
+
+                const spoutPosition = { x: worldSpoutPos.x, y: worldSpoutPos.y }; 
+                
+                for (let i = 0; i < PARTICLE_COUNT; i++) {
+                    particles.angles[i] += particles.speeds[i];
+                    
+                    const x = spoutPosition.x + Math.cos(particles.angles[i] + particles.offsets[i]) * particles.radii[i];
+                    const y = spoutPosition.y + Math.sin(timeStr + particles.offsets[i]) * 0.15 + particles.radii[i] * 0.4;
+                    const z = Math.sin(particles.angles[i]) * particles.radii[i] * 0.4;
+                    
+                    particles.positions[i * 3] = x;
+                    particles.positions[i * 3 + 1] = y;
+                    particles.positions[i * 3 + 2] = z;
+                }
+                
+                particles.geometry.attributes.position.needsUpdate = true;
             }
 
             renderer.render(scene, camera);
         }
 
-        animate();
-
-        /* ──────────────────────────────────────────────
-         * Cleanup
-         * ──────────────────────────────────────────── */
+        /* ── Cleanup ── */
         cleanupRef.current = () => {
             cancelAnimationFrame(animId);
             observer.disconnect();
@@ -574,6 +469,9 @@ export default function GenieModel() {
             if (container.contains(renderer.domElement)) {
                 container.removeChild(renderer.domElement);
             }
+            gsap.killTweensOf(particles.radii);
+            gsap.killTweensOf(".genie-letter");
+            gsap.killTweensOf("#genie-text-overlay");
         };
     }, []);
 
@@ -585,13 +483,42 @@ export default function GenieModel() {
     }, [init]);
 
     return (
-        <div
-            ref={containerRef}
-            className="w-full h-full"
-            style={{
-                touchAction: "none",
-                background: 'radial-gradient(ellipse at 50% 75%, rgba(255, 140, 0, 0.12) 0%, rgba(40, 0, 80, 0.08) 40%, transparent 70%)'
-            }}
-        />
+        <div className="relative w-full h-full genie-canvas-container">
+            {/* The 3D Canvas wrapper */}
+            <div
+                ref={containerRef}
+                className="w-full h-full absolute inset-0"
+                style={{
+                    touchAction: "none",
+                    background: 'radial-gradient(ellipse at 50% 75%, rgba(255, 140, 0, 0.12) 0%, rgba(40, 0, 80, 0.08) 40%, transparent 70%)'
+                }}
+            />
+            {/* The GSAP text overlay */}
+            <div 
+                id="genie-text-overlay"
+                style={{
+                    position: "absolute",
+                    top: "40%",
+                    left: "50%", 
+                    transform: "translate(-50%, -50%)",
+                    pointerEvents: "none",
+                    zIndex: 10,
+                    opacity: 0,
+                    display: "flex",
+                    gap: "2px",
+                    userSelect: "none"
+                }}
+            >
+                {"Genie is Coming".split("").map((char, i) => (
+                    <span 
+                        key={i} 
+                        className="genie-letter"
+                        style={{ opacity: 0 }}
+                    >
+                        {char === " " ? "\u00A0" : char}
+                    </span>
+                ))}
+            </div>
+        </div>
     );
 }

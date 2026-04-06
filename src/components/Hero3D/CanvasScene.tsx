@@ -97,7 +97,7 @@ export default function CanvasScene() {
             <SmokeEffect />
 
             {/* Genie – follows cursor when scroll-activated */}
-            <GenieModel scrollRef={scrollRef} cursorRef={cursorRef} />
+            <GenieModel />
 
             {/* Magical particles */}
             <Particles lowPower={isMobile} />
